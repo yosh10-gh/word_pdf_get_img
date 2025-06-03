@@ -294,27 +294,48 @@ def resize_image_to_100px(image):
         fallback_image = Image.new('RGB', (50, 50), 'white')
         return fallback_image
 
-def save_to_excel_with_images(file_list, output_filename="検索結果.xlsx"):
+def save_to_excel_with_images(file_list, output_dir="result", output_filename="検索結果.xlsx"):
     """
-    ファイルリストと画像をExcelファイルに保存する
+    ファイルリストと画像をExcelファイルに保存する（全ての画像を抽出）
     
     Args:
         file_list (list): ファイルパスのリスト
+        output_dir (str): 出力ディレクトリ
         output_filename (str): 出力するExcelファイル名
     """
     if not file_list:
         print("保存するファイルがありません。")
         return
     
+    # 出力ディレクトリを作成
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, output_filename)
+    
     # 新しいワークブックを作成
     wb = Workbook()
     ws = wb.active
     
-    # ヘッダーを設定
+    # 最大画像数を事前に調べる
+    max_images = 0
+    print("最大画像数を調査中...")
+    for file_path in file_list:
+        try:
+            images = []
+            if file_path.endswith('.docx'):
+                images = extract_images_from_docx(file_path)
+            elif file_path.endswith('.pdf'):
+                images = extract_images_from_pdf(file_path)
+            max_images = max(max_images, len(images))
+        except Exception:
+            continue
+    
+    print(f"最大画像数: {max_images}")
+    
+    # ヘッダーを動的に設定
     ws['A1'] = 'ファイルパス'
-    ws['B1'] = 'image1'
-    ws['C1'] = 'image2' 
-    ws['D1'] = 'image3'
+    for i in range(max_images):
+        col_letter = chr(ord('B') + i)  # B, C, D, E, F...
+        ws[f'{col_letter}1'] = f'image{i+1}'
     
     # 行の高さを設定（100px用）
     for row in range(2, len(file_list) + 2):
@@ -322,9 +343,9 @@ def save_to_excel_with_images(file_list, output_filename="検索結果.xlsx"):
     
     # 列の幅を設定
     ws.column_dimensions['A'].width = 50
-    ws.column_dimensions['B'].width = 15
-    ws.column_dimensions['C'].width = 15
-    ws.column_dimensions['D'].width = 15
+    for i in range(max_images):
+        col_letter = chr(ord('B') + i)
+        ws.column_dimensions[col_letter].width = 15
     
     temp_files = []  # 一時ファイルのリストを保持
     
@@ -343,10 +364,12 @@ def save_to_excel_with_images(file_list, output_filename="検索結果.xlsx"):
                 elif file_path.endswith('.pdf'):
                     images = extract_images_from_pdf(file_path)
                 
-                # 最大3つの画像をB、C、D列に配置
-                columns = ['B', 'C', 'D']
-                for img_idx, image in enumerate(images[:3]):  # 最大3つまで
+                # 全ての画像をB列以降に配置
+                for img_idx, image in enumerate(images):
                     try:
+                        # 列名を計算（B, C, D, E, F...）
+                        col_letter = chr(ord('B') + img_idx)
+                        
                         # 画像を100px×100pxにリサイズ
                         resized_image = resize_image_to_100px(image.copy())
                         
@@ -371,7 +394,7 @@ def save_to_excel_with_images(file_list, output_filename="検索結果.xlsx"):
                             img.width = 100
                             img.height = 100
                             
-                            cell_location = f'{columns[img_idx]}{idx}'
+                            cell_location = f'{col_letter}{idx}'
                             ws.add_image(img, cell_location)
                             
                             print(f"  → image{img_idx + 1}: 配置完了")
@@ -389,15 +412,16 @@ def save_to_excel_with_images(file_list, output_filename="検索結果.xlsx"):
         
         # Excelファイルを保存
         try:
-            wb.save(output_filename)
-            print(f"Excelファイルを保存しました: {output_filename}")
+            wb.save(output_path)
+            print(f"Excelファイルを保存しました: {output_path}")
         except (PermissionError, OSError) as e:
             print(f"Excelファイル保存エラー: {str(e)}")
             # 代替ファイル名で保存を試行
             import time
             alt_filename = f"検索結果_{int(time.time())}.xlsx"
-            wb.save(alt_filename)
-            print(f"代替ファイル名で保存しました: {alt_filename}")
+            alt_path = os.path.join(output_dir, alt_filename)
+            wb.save(alt_path)
+            print(f"代替ファイル名で保存しました: {alt_path}")
     
     finally:
         # 一時ファイルをクリーンアップ
@@ -435,12 +459,12 @@ def main():
         for i, file_path in enumerate(files_with_images, 1):
             print(f"{i:3d}. {file_path}")
         
-        # Excelファイルに保存（画像含有ファイルのみ + 埋め込み画像表示）
+        # Excelファイルに保存（画像含有ファイルのみ + 全ての埋め込み画像表示）
         if files_with_images:
             print("\n" + "-" * 50)
-            print("画像を埋め込んだExcelファイルを作成中...")
+            print("全ての画像を埋め込んだExcelファイルを作成中...")
             print("-" * 50)
-            save_to_excel_with_images(files_with_images, "画像含有ファイル検索結果.xlsx")
+            save_to_excel_with_images(files_with_images, "result", "検索結果.xlsx")
         else:
             print("\n画像が含まれているファイルがありませんでした。")
     else:

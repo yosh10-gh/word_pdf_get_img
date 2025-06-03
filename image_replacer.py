@@ -6,6 +6,7 @@ from PIL import Image
 import io
 import tempfile
 from datetime import datetime
+import re
 
 def load_replacement_orders(csv_file_path):
     """
@@ -52,7 +53,7 @@ def load_replacement_orders(csv_file_path):
             
             # 修正先①と修正画像①をチェック
             if len(row) > 5 and not pd.isna(row.iloc[5]) and not pd.isna(row.iloc[6]):
-                target_image = row.iloc[5]  # 修正先① (image1, image2, image3)
+                target_image = row.iloc[5]  # 修正先① (image1, image2, image3, ...)
                 replacement_image = row.iloc[6]  # 修正画像パス①
                 if target_image and replacement_image:
                     order['replacements'].append({
@@ -62,7 +63,7 @@ def load_replacement_orders(csv_file_path):
             
             # 修正先②と修正画像②をチェック
             if len(row) > 7 and not pd.isna(row.iloc[7]) and not pd.isna(row.iloc[8]):
-                target_image = row.iloc[7]  # 修正先② (image1, image2, image3)
+                target_image = row.iloc[7]  # 修正先② (image1, image2, image3, ...)
                 replacement_image = row.iloc[8]  # 修正画像パス②
                 if target_image and replacement_image:
                     order['replacements'].append({
@@ -81,20 +82,23 @@ def load_replacement_orders(csv_file_path):
 
 def get_image_index(target_image):
     """
-    image1, image2, image3の文字列を配列インデックス（0,1,2）に変換
+    image1, image2, image3, ...の文字列を配列インデックス（0,1,2,...）に変換
     
     Args:
-        target_image (str): "image1", "image2", "image3"のいずれか
+        target_image (str): "image1", "image2", "image3", ...のいずれか
         
     Returns:
-        int: 配列インデックス（0,1,2）または-1（無効な場合）
+        int: 配列インデックス（0,1,2,...）または-1（無効な場合）
     """
-    target_map = {
-        'image1': 0,
-        'image2': 1,
-        'image3': 2
-    }
-    return target_map.get(target_image.lower(), -1)
+    try:
+        # 正規表現でimage後の数字を抽出
+        match = re.match(r'image(\d+)', target_image.lower())
+        if match:
+            image_num = int(match.group(1))
+            return image_num - 1  # 1-based index を 0-based index に変換
+        return -1
+    except Exception:
+        return -1
 
 def prepare_replacement_image(image_path):
     """
@@ -128,7 +132,7 @@ def prepare_replacement_image(image_path):
 
 def replace_images_in_docx(file_path, replacements, output_dir):
     """
-    .docxファイル内の画像を差し替える
+    .docxファイル内の画像を差し替える（全ての画像に対応）
     
     Args:
         file_path (str): 元の.docxファイルパス
@@ -176,7 +180,7 @@ def replace_images_in_docx(file_path, replacements, output_dir):
                     # インデックスを取得
                     image_index = get_image_index(target_image)
                     if image_index == -1 or image_index >= len(media_files):
-                        print(f"    → 無効な対象画像: {target_image}")
+                        print(f"    → 無効な対象画像: {target_image} (インデックス: {image_index}, 最大: {len(media_files)-1})")
                         continue
                     
                     # 差し替え画像を準備
