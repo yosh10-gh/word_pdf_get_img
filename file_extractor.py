@@ -76,6 +76,39 @@ def has_images_in_docx(file_path):
     except Exception:
         return False
 
+def get_media_filenames(file_path):
+    """
+    .docxファイル内の画像ファイル名のリストを取得する
+    
+    Args:
+        file_path (str): .docxファイルのパス
+        
+    Returns:
+        list: 画像ファイル名のリスト（ソート済み）
+    """
+    media_filenames = []
+    try:
+        # ファイルの存在とアクセス権限をチェック
+        if not os.path.exists(file_path) or not os.access(file_path, os.R_OK):
+            return media_filenames
+            
+        with zipfile.ZipFile(file_path, 'r') as zip_file:
+            # word/media/ フォルダ内のファイルを検索
+            for file_info in zip_file.filelist:
+                if file_info.filename.startswith('word/media/') and not file_info.is_dir():
+                    # ファイル名のみを取得
+                    filename = os.path.basename(file_info.filename)
+                    media_filenames.append(filename)
+        
+        # ファイル名順にソート
+        media_filenames.sort()
+        
+    except (zipfile.BadZipFile, PermissionError, OSError) as e:
+        print(f"  → docxファイル処理エラー: {str(e)}")
+    except Exception:
+        pass
+    return media_filenames
+
 def extract_images_from_docx(file_path):
     """
     .docxファイルから画像を抽出する
@@ -296,7 +329,7 @@ def resize_image_to_100px(image):
 
 def save_to_excel_with_images(file_list, output_dir="result", output_filename="検索結果.xlsx"):
     """
-    ファイルリストと画像をExcelファイルに保存する（全ての画像を抽出）
+    ファイルリストと画像をExcelファイルに保存する（実際の画像ファイル名を使用）
     
     Args:
         file_list (list): ファイルパスのリスト
@@ -315,27 +348,36 @@ def save_to_excel_with_images(file_list, output_dir="result", output_filename="�
     wb = Workbook()
     ws = wb.active
     
-    # 最大画像数を事前に調べる
-    max_images = 0
-    print("最大画像数を調査中...")
+    # 全ファイルの画像ファイル名を調査
+    all_image_filenames = set()
+    file_image_map = {}
+    
+    print("画像ファイル名を調査中...")
     for file_path in file_list:
         try:
-            images = []
             if file_path.endswith('.docx'):
-                images = extract_images_from_docx(file_path)
+                media_filenames = get_media_filenames(file_path)
+                file_image_map[file_path] = media_filenames
+                all_image_filenames.update(media_filenames)
             elif file_path.endswith('.pdf'):
                 images = extract_images_from_pdf(file_path)
-            max_images = max(max_images, len(images))
+                pdf_filenames = [f"pdf_image{i+1}" for i in range(len(images))]
+                file_image_map[file_path] = pdf_filenames
+                all_image_filenames.update(pdf_filenames)
         except Exception:
-            continue
+            file_image_map[file_path] = []
     
-    print(f"最大画像数: {max_images}")
+    # 画像ファイル名をソート
+    sorted_image_filenames = sorted(all_image_filenames)
+    max_images = len(sorted_image_filenames)
+    
+    print(f"ユニークな画像ファイル名数: {max_images}")
     
     # ヘッダーを動的に設定
     ws['A1'] = 'ファイルパス'
-    for i in range(max_images):
-        col_letter = chr(ord('B') + i)  # B, C, D, E, F...
-        ws[f'{col_letter}1'] = f'image{i+1}'
+    for i, filename in enumerate(sorted_image_filenames):
+        col_letter = chr(ord('B') + i) if i < 25 else f"A{chr(ord('A') + i - 25)}"
+        ws[f'{col_letter}1'] = filename
     
     # 行の高さを設定（100px用）
     for row in range(2, len(file_list) + 2):
@@ -344,7 +386,7 @@ def save_to_excel_with_images(file_list, output_dir="result", output_filename="�
     # 列の幅を設定
     ws.column_dimensions['A'].width = 50
     for i in range(max_images):
-        col_letter = chr(ord('B') + i)
+        col_letter = chr(ord('B') + i) if i < 25 else f"A{chr(ord('A') + i - 25)}"
         ws.column_dimensions[col_letter].width = 15
     
     temp_files = []  # 一時ファイルのリストを保持
@@ -359,51 +401,55 @@ def save_to_excel_with_images(file_list, output_dir="result", output_filename="�
                 
                 # 画像を抽出
                 images = []
+                current_filenames = file_image_map.get(file_path, [])
+                
                 if file_path.endswith('.docx'):
                     images = extract_images_from_docx(file_path)
                 elif file_path.endswith('.pdf'):
                     images = extract_images_from_pdf(file_path)
                 
-                # 全ての画像をB列以降に配置
-                for img_idx, image in enumerate(images):
+                # 実際のファイル名と画像を対応付けて配置
+                for img_idx, (filename, image) in enumerate(zip(current_filenames, images)):
                     try:
-                        # 列名を計算（B, C, D, E, F...）
-                        col_letter = chr(ord('B') + img_idx)
-                        
-                        # 画像を100px×100pxにリサイズ
-                        resized_image = resize_image_to_100px(image.copy())
-                        
-                        # 一時ファイルを作成（手動で削除）
-                        temp_fd, temp_path = tempfile.mkstemp(suffix='.png')
-                        temp_files.append(temp_path)  # 削除用にリストに追加
-                        
-                        try:
-                            # ファイルディスクリプタを閉じる
-                            os.close(temp_fd)
+                        # 該当する列名を計算
+                        if filename in sorted_image_filenames:
+                            col_idx = sorted_image_filenames.index(filename)
+                            col_letter = chr(ord('B') + col_idx) if col_idx < 25 else f"A{chr(ord('A') + col_idx - 25)}"
                             
-                            # 画像を保存
-                            resized_image.save(temp_path, 'PNG', optimize=True)
+                            # 画像を100px×100pxにリサイズ
+                            resized_image = resize_image_to_100px(image.copy())
                             
-                            # ファイルサイズをチェック（異常に大きい場合はスキップ）
-                            if os.path.getsize(temp_path) > 10 * 1024 * 1024:  # 10MB制限
-                                print(f"    → image{img_idx + 1}: ファイルサイズが大きすぎます")
-                                continue
+                            # 一時ファイルを作成（手動で削除）
+                            temp_fd, temp_path = tempfile.mkstemp(suffix='.png')
+                            temp_files.append(temp_path)  # 削除用にリストに追加
                             
-                            # Excelに画像を挿入
-                            img = OpenpyxlImage(temp_path)
-                            img.width = 100
-                            img.height = 100
-                            
-                            cell_location = f'{col_letter}{idx}'
-                            ws.add_image(img, cell_location)
-                            
-                            print(f"  → image{img_idx + 1}: 配置完了")
-                        except (OSError, PermissionError) as e:
-                            print(f"  → image{img_idx + 1}: ファイル操作エラー ({str(e)})")
-                        except Exception as e:
-                            print(f"  → image{img_idx + 1}: エラー ({str(e)})")
+                            try:
+                                # ファイルディスクリプタを閉じる
+                                os.close(temp_fd)
+                                
+                                # 画像を保存
+                                resized_image.save(temp_path, 'PNG', optimize=True)
+                                
+                                # ファイルサイズをチェック（異常に大きい場合はスキップ）
+                                if os.path.getsize(temp_path) > 10 * 1024 * 1024:  # 10MB制限
+                                    print(f"    → {filename}: ファイルサイズが大きすぎます")
+                                    continue
+                                
+                                # Excelに画像を挿入
+                                img = OpenpyxlImage(temp_path)
+                                img.width = 100
+                                img.height = 100
+                                
+                                cell_location = f'{col_letter}{idx}'
+                                ws.add_image(img, cell_location)
+                                
+                                print(f"  → {filename}: 配置完了")
+                            except (OSError, PermissionError) as e:
+                                print(f"  → {filename}: ファイル操作エラー ({str(e)})")
+                            except Exception as e:
+                                print(f"  → {filename}: エラー ({str(e)})")
                     except Exception as e:
-                        print(f"  → image{img_idx + 1}: 画像処理エラー ({str(e)})")
+                        print(f"  → {filename}: 画像処理エラー ({str(e)})")
                 
                 print(f"  → 合計 {len(images)} 個の画像を処理")
             except Exception as e:
@@ -432,6 +478,61 @@ def save_to_excel_with_images(file_list, output_dir="result", output_filename="�
             except Exception:
                 pass  # 削除できなくても続行
 
+def save_to_csv_with_image_info(file_list, output_dir="result", output_filename="検索結果.csv"):
+    """
+    ファイルリストと画像情報をCSVファイルに保存する（実際のファイル名を使用）
+    
+    Args:
+        file_list (list): ファイルパスのリスト
+        output_dir (str): 出力ディレクトリ
+        output_filename (str): 出力するCSVファイル名
+    """
+    if not file_list:
+        print("保存するファイルがありません。")
+        return
+    
+    # 出力ディレクトリを作成
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, output_filename)
+    
+    # CSVデータを準備
+    csv_data = []
+    
+    print("CSV用データを作成中...")
+    for file_path in file_list:
+        try:
+            print(f"画像情報抽出中: {file_path}")
+            
+            row = {'ファイルパス': file_path}
+            
+            if file_path.endswith('.docx'):
+                media_filenames = get_media_filenames(file_path)
+                # 最初の3つの画像ファイル名を記録（拡張可能）
+                for i, filename in enumerate(media_filenames[:6]):  # 最大6個まで
+                    row[f'画像{i+1}_ファイル名'] = filename
+                    
+            elif file_path.endswith('.pdf'):
+                images = extract_images_from_pdf(file_path)
+                # PDFの場合は便宜的な名前を使用
+                for i in range(min(len(images), 6)):  # 最大6個まで
+                    row[f'画像{i+1}_ファイル名'] = f"pdf_image{i+1}"
+            
+            csv_data.append(row)
+            
+        except Exception as e:
+            print(f"  → ファイル処理エラー: {str(e)}")
+            # エラーの場合もファイルパスは記録
+            csv_data.append({'ファイルパス': file_path})
+            continue
+    
+    # DataFrameを作成してCSV保存
+    try:
+        df = pd.DataFrame(csv_data)
+        df.to_csv(output_path, index=False, encoding='utf-8-sig')
+        print(f"CSVファイルを保存しました: {output_path}")
+    except Exception as e:
+        print(f"CSVファイル保存エラー: {str(e)}")
+
 def main():
     # 検索対象のディレクトリを指定（現在のディレクトリから開始）
     search_directory = "."
@@ -459,12 +560,17 @@ def main():
         for i, file_path in enumerate(files_with_images, 1):
             print(f"{i:3d}. {file_path}")
         
-        # Excelファイルに保存（画像含有ファイルのみ + 全ての埋め込み画像表示）
+        # Excelファイルに保存（実際の画像ファイル名でヘッダー作成）
         if files_with_images:
             print("\n" + "-" * 50)
-            print("全ての画像を埋め込んだExcelファイルを作成中...")
+            print("実際の画像ファイル名を使用したExcelファイルを作成中...")
             print("-" * 50)
             save_to_excel_with_images(files_with_images, "result", "検索結果.xlsx")
+            
+            print("\n" + "-" * 50)
+            print("実際の画像ファイル名を使用したCSVファイルを作成中...")
+            print("-" * 50)
+            save_to_csv_with_image_info(files_with_images, "result", "検索結果.csv")
         else:
             print("\n画像が含まれているファイルがありませんでした。")
     else:
