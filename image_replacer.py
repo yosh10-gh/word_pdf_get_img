@@ -10,7 +10,9 @@ import re
 
 def load_replacement_orders(csv_file_path):
     """
-    画像差し替え指示CSVファイルを読み込む
+    画像差し替え指示CSVファイルを読み込む（新形式対応）
+    
+    形式: ファイルパス,画像名1,差し替えパス1,画像名2,差し替えパス2,...
     
     Args:
         csv_file_path (str): CSVファイルのパス
@@ -28,7 +30,7 @@ def load_replacement_orders(csv_file_path):
         for enc in encodings_to_try:
             try:
                 print(f"エンコーディング '{enc}' で読み込み試行中...")
-                df = pd.read_csv(csv_file_path, encoding=enc)
+                df = pd.read_csv(csv_file_path, encoding=enc, header=None)  # ヘッダーなしで読み込み
                 print(f"エンコーディング '{enc}' で読み込み成功")
                 break
             except Exception as e:
@@ -39,7 +41,11 @@ def load_replacement_orders(csv_file_path):
             print("CSVファイルを読み込めませんでした")
             return replacement_orders
         
-        for index, row in df.iterrows():
+        # 1行目がヘッダーの場合はスキップ
+        start_row = 1 if df.iloc[0, 0] == 'ファイルパス' else 0
+        
+        for index in range(start_row, len(df)):
+            row = df.iloc[index]
             file_path = row.iloc[0]  # ファイルパス
             
             # 空の行をスキップ
@@ -51,29 +57,24 @@ def load_replacement_orders(csv_file_path):
                 'replacements': []
             }
             
-            # 修正先①と修正画像①をチェック
-            if len(row) > 5 and not pd.isna(row.iloc[5]) and not pd.isna(row.iloc[6]):
-                target_image = row.iloc[5]  # 修正先① (image1, image2, image3, ...)
-                replacement_image = row.iloc[6]  # 修正画像パス①
-                if target_image and replacement_image:
-                    order['replacements'].append({
-                        'target': target_image,
-                        'replacement_path': replacement_image
-                    })
-            
-            # 修正先②と修正画像②をチェック
-            if len(row) > 7 and not pd.isna(row.iloc[7]) and not pd.isna(row.iloc[8]):
-                target_image = row.iloc[7]  # 修正先② (image1, image2, image3, ...)
-                replacement_image = row.iloc[8]  # 修正画像パス②
-                if target_image and replacement_image:
-                    order['replacements'].append({
-                        'target': target_image,
-                        'replacement_path': replacement_image
-                    })
+            # 1列目以降のペア（画像名、差し替えパス）を処理
+            for col_idx in range(1, len(row), 2):
+                if col_idx + 1 < len(row):
+                    target_image = row.iloc[col_idx]
+                    replacement_path = row.iloc[col_idx + 1]
+                    
+                    # 両方の値が存在し、空でない場合に追加
+                    if (not pd.isna(target_image) and not pd.isna(replacement_path) and 
+                        target_image != '' and replacement_path != ''):
+                        order['replacements'].append({
+                            'target': target_image,
+                            'replacement_path': replacement_path
+                        })
             
             # 差し替え指示がある場合のみ追加
             if order['replacements']:
                 replacement_orders.append(order)
+                print(f"読み込み: {file_path} ({len(order['replacements'])}個の差し替え指示)")
     
     except Exception as e:
         print(f"CSVファイル読み込みエラー: {str(e)}")
@@ -145,16 +146,14 @@ def replace_images_in_docx(file_path, replacements, output_dir):
     try:
         print(f"  → Wordファイルの画像差し替え開始: {file_path}")
         
-        # 相対パスの場合のディレクトリ構造を保持
-        rel_path = os.path.relpath(file_path)
-        if rel_path.startswith('.\\'):
-            rel_path = rel_path[2:]  # '.\'を除去
+        # ファイル名のみを取得（ディレクトリ構造は無視）
+        file_name = os.path.basename(file_path)
         
-        # 出力ファイルパスを準備（ディレクトリ構造を保持）
-        output_path = os.path.join(output_dir, rel_path)
+        # 出力ファイルパスを準備（直接出力ディレクトリに配置）
+        output_path = os.path.join(output_dir, file_name)
         
         # 出力ディレクトリを作成
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
         
         # 一時ファイルを作成して新しいzipファイルを構築
         temp_fd, temp_path = tempfile.mkstemp(suffix='.docx')
@@ -177,10 +176,10 @@ def replace_images_in_docx(file_path, replacements, output_dir):
                     target_image = replacement['target']
                     replacement_path = replacement['replacement_path']
                     
-                    # インデックスを取得
-                    image_index = get_image_index(target_image)
-                    if image_index == -1 or image_index >= len(media_files):
-                        print(f"    → 無効な対象画像: {target_image} (インデックス: {image_index}, 最大: {len(media_files)-1})")
+                    # 画像ファイル名で直接検索
+                    image_index = get_image_index_by_filename(media_files, target_image)
+                    if image_index == -1:
+                        print(f"    → 対象画像が見つかりません: {target_image}")
                         continue
                     
                     # 差し替え画像を準備
@@ -240,13 +239,13 @@ def replace_images_in_pdf(file_path, replacements, output_dir):
     print(f"    → PyMuPDF等の追加ライブラリが必要です")
     return None
 
-def process_image_replacement(csv_file_path, output_base_dir="edit_data"):
+def process_image_replacement(csv_file_path, output_base_dir="replace_data/replace_result"):
     """
     CSVファイルの指示に基づいて画像差し替えを実行する
     
     Args:
         csv_file_path (str): 差し替え指示CSVファイルのパス
-        output_base_dir (str): 出力ディレクトリのベースパス
+        output_base_dir (str): 出力ディレクトリのパス
     """
     print("=" * 60)
     print("画像差し替え処理開始")
@@ -261,9 +260,8 @@ def process_image_replacement(csv_file_path, output_base_dir="edit_data"):
     
     print(f"差し替え対象ファイル数: {len(replacement_orders)}")
     
-    # タイムスタンプ付きの出力ディレクトリを作成
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = os.path.join(output_base_dir, f"replaced_{timestamp}")
+    # 出力ディレクトリを設定（タイムスタンプなし）
+    output_dir = output_base_dir
     os.makedirs(output_dir, exist_ok=True)
     
     print(f"出力ディレクトリ: {output_dir}")
@@ -312,9 +310,35 @@ def process_image_replacement(csv_file_path, output_base_dir="edit_data"):
     print(f"出力ディレクトリ: {output_dir}")
     print("=" * 60)
 
+def get_image_index_by_filename(media_files, target_filename):
+    """
+    画像ファイル名から配列インデックスを取得する
+    
+    Args:
+        media_files (list): メディアファイル名のリスト（ソート済み）
+        target_filename (str): 対象の画像ファイル名
+        
+    Returns:
+        int: 配列インデックス（見つからない場合は-1）
+    """
+    try:
+        for i, media_file in enumerate(media_files):
+            # ファイル名のみを比較（パスを除去）
+            if os.path.basename(media_file) == target_filename:
+                return i
+        return -1
+    except Exception:
+        return -1
+
 def main():
-    # 差し替え指示CSVファイルのパス
-    csv_file = "order_edit_image.csv"
+    import sys
+    
+    # コマンドライン引数からCSVファイルパスを取得
+    if len(sys.argv) > 1:
+        csv_file = sys.argv[1]
+    else:
+        # デフォルトのファイル名
+        csv_file = "order_edit_image.csv"
     
     if not os.path.exists(csv_file):
         print(f"差し替え指示ファイルが見つかりません: {csv_file}")
